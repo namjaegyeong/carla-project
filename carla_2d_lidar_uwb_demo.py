@@ -96,7 +96,7 @@ def main():
         # =========================
         blueprint_library = world.get_blueprint_library()
 
-        vehicle_bp = blueprint_library.filter("vehicle.tesla.model3")[0]
+        vehicle_bp = blueprint_library.filter("vehicle.tesla.cybertruck")[0]
 
         spawn_points = world.get_map().get_spawn_points()
         spawn_point = random.choice(spawn_points)
@@ -104,21 +104,12 @@ def main():
         # =========================
         # 차량 생성
         # =========================
-        ego_vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+        ego_vehicle = world.try_spawn_actor(vehicle_bp, spawn_point)
         actor_list.append(ego_vehicle)
 
         print("Ego vehicle spawned")
 
-        # 카메라 시점을 차량으로 옮기기
         spectator = world.get_spectator()
-
-        transform = ego_vehicle.get_transform()
-        spectator.set_transform(
-            carla.Transform(
-                transform.location + carla.Location(z=10),
-                carla.Rotation(pitch=-90)
-            )
-        )
 
         # 자동 주행 ON
         ego_vehicle.set_autopilot(True)
@@ -161,6 +152,18 @@ def main():
             tf = ego_vehicle.get_transform()
             loc = tf.location
             yaw = tf.rotation.yaw
+
+            # 차량 뒤쪽 위치 계산
+            forward = tf.get_forward_vector()
+
+            camera_loc = loc - forward * 6 + carla.Location(z=3)
+
+            spectator.set_transform(
+                carla.Transform(
+                    camera_loc,
+                    carla.Rotation(pitch=-15, yaw=yaw)
+                )
+            )
 
             uwb_data = simulate_uwb(ego_vehicle)
 
