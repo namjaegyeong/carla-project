@@ -3,6 +3,7 @@ import random
 import time
 import math
 import numpy as np
+from sklearn.cluster import DBSCAN
 
 
 latest_lidar = {
@@ -18,14 +19,8 @@ def lidar_callback(data):
     xy = points[:, :2]
     latest_lidar["points"] = xy
 
-
-def detect_front_obstacle(points, front_dist=6.0, half_width=1.5):
-    """
-    차량 전방 영역에 장애물이 있는지 판단
-    x > 0: 차량 앞쪽
-    |y| < half_width: 차량 폭 근처
-    """
-
+# 포인트 여러 개가 잡힐 때 장애물 인식
+def detect_front_obstacle(points, front_dist=8.0, half_width=2.0):
     if points is None or len(points) == 0:
         return False, None
 
@@ -35,7 +30,7 @@ def detect_front_obstacle(points, front_dist=6.0, half_width=1.5):
         (np.abs(points[:, 1]) < half_width)
     ]
 
-    if len(front_points) == 0:
+    if len(front_points) < 5:   # 핵심 조건
         return False, None
 
     distances = np.linalg.norm(front_points, axis=1)
@@ -43,35 +38,95 @@ def detect_front_obstacle(points, front_dist=6.0, half_width=1.5):
 
     return True, min_dist
 
-
-def choose_avoid_direction(points):
+# 거리 기반 회피 판단
+def choose_avoid_direction(cluster):
     """
-    좌/우 중 더 빈 공간이 많은 방향 선택
-    y > 0: 왼쪽
-    y < 0: 오른쪽
+    obstacle 중심 기준 회피 방향 결정
     """
 
-    if points is None or len(points) == 0:
-        return 0.4  # 기본 오른쪽
+    if cluster is None or len(cluster) == 0:
+        return 0.0
 
-    near_points = points[
-        (points[:, 0] > 0.5) &
-        (points[:, 0] < 8.0)
-    ]
+    center = np.mean(cluster, axis=0)
 
-    left_count = np.sum(near_points[:, 1] > 0)
-    right_count = np.sum(near_points[:, 1] < 0)
+    x = center[0]
+    y = center[1]
 
-    # 점이 적은 쪽이 더 비어 있음
-    if left_count < right_count:
-        return 0.4   # 왼쪽 조향
+    print(f"[CLUSTER CENTER] x={x:.2f}, y={y:.2f}")
+
+    # 장애물이 왼쪽 → 오른쪽 회피
+    if y > 0:
+        return -0.8
+
+    # 장애물이 오른쪽 → 왼쪽 회피
     else:
-        return -0.4  # 오른쪽 조향
-
+        return 0.8
 
 def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
 
+# LiDAR 전처리
+def preprocess_lidar(points):
+    if points is None or len(points) == 0:
+        return points
+
+    # Downsample
+    points = points[::5]
+
+    # 너무 먼 점 제거
+    dist = np.linalg.norm(points, axis=1)
+    points = points[dist < 20.0]
+
+    return points
+
+def cluster_obstacles(points):
+    """
+    LiDAR point들을 obstacle 단위로 clustering
+    """
+
+    if points is None or len(points) == 0:
+        return []
+
+    clustering = DBSCAN(
+        eps=1.2,       # point 간 최대 거리
+        min_samples=4  # 최소 point 개수
+    ).fit(points)
+
+    labels = clustering.labels_
+
+    clusters = []
+
+    for label in set(labels):
+
+        # noise 제거
+        if label == -1:
+            continue
+
+        cluster_points = points[labels == label]
+
+        clusters.append(cluster_points)
+
+    return clusters
+
+def find_closest_cluster(clusters):
+    """
+    가장 가까운 obstacle cluster 찾기
+    """
+
+    closest_cluster = None
+    min_dist = 9999
+
+    for cluster in clusters:
+
+        center = np.mean(cluster, axis=0)
+
+        dist = np.linalg.norm(center)
+
+        if dist < min_dist:
+            min_dist = dist
+            closest_cluster = cluster
+
+    return closest_cluster, min_dist
 
 def move_to_target_with_lidar(vehicle, target_loc):
     transform = vehicle.get_transform()
@@ -93,27 +148,66 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
     base_steer = np.clip(yaw_error * 0.8, -0.6, 0.6)
 
-    points = latest_lidar["points"]
-    obstacle, min_dist = detect_front_obstacle(points)
+    points = preprocess_lidar(latest_lidar["points"])
+
+    clusters = cluster_obstacles(points)
+
+    closest_cluster, cluster_dist = find_closest_cluster(clusters)
+
+    obstacle = False
+    min_dist = None
+
+    if closest_cluster is not None:
+
+        center = np.mean(closest_cluster, axis=0)
+
+        x = center[0]
+        y = center[1]
+
+        dist = np.linalg.norm(center)
+
+        print(f"[OBSTACLE] center=({x:.2f}, {y:.2f}), dist={dist:.2f}")
+
+        # 전방 obstacle만 사용
+        if (
+            x > 0.5 and
+            x < 10.0 and
+            abs(y) < 4.0
+        ):
+            obstacle = True
+            min_dist = dist
+
+    print(points)
+
+    print(obstacle, min_dist)
 
     if obstacle:
-        avoid_steer = choose_avoid_direction(points)
+        avoid_steer = choose_avoid_direction(closest_cluster)
 
         print(f"[LiDAR] Obstacle detected: {min_dist:.2f} m → avoid")
 
-        control = carla.VehicleControl(
-            throttle=0.25,
-            steer=float(avoid_steer),
-            brake=0.0
-        )
+        steer = 0.3 * base_steer + 0.7 * avoid_steer
+        steer = float(np.clip(steer, -1.0, 1.0))
+
+        if min_dist < 2.5:
+            throttle = 0.0
+            brake = 0.8
+        else:
+            throttle = 0.2
+            brake = 0.0
+
     else:
         print(f"[Move] distance_to_goal={distance_to_goal:.2f} m")
-
-        control = carla.VehicleControl(
-            throttle=0.35,
-            steer=float(base_steer),
-            brake=0.0
-        )
+        
+        steer = base_steer
+        throttle = 0.35
+        brake = 0.0
+        
+    control = carla.VehicleControl(
+        throttle=throttle,
+        steer=float(steer),
+        brake=brake
+    )
 
     vehicle.apply_control(control)
     return False
