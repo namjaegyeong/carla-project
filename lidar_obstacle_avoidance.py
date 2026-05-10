@@ -10,7 +10,6 @@ latest_lidar = {
     "points": None
 }
 
-
 def lidar_callback(data):
     points = np.frombuffer(data.raw_data, dtype=np.float32)
     points = np.reshape(points, (-1, 4))
@@ -18,25 +17,45 @@ def lidar_callback(data):
     # vehicle local coordinate 기준 x, y만 사용
     xy = points[:, :2]
     latest_lidar["points"] = xy
+    
+    # lidar 좌표 확인 (차량 기준 좌표계)
+    # distances = np.linalg.norm(points, axis=1)
 
-# 포인트 여러 개가 잡힐 때 장애물 인식
-def detect_front_obstacle(points, front_dist=8.0, half_width=2.0):
-    if points is None or len(points) == 0:
-        return False, None
+    # sorted_idx = np.argsort(distances)
 
-    front_points = points[
-        (points[:, 0] > 0.5) &
-        (points[:, 0] < front_dist) &
-        (np.abs(points[:, 1]) < half_width)
-    ]
+    # nearest_points = points[sorted_idx[:10]]
 
-    if len(front_points) < 5:   # 핵심 조건
-        return False, None
+    # print(f"nearest_points : {nearest_points[:, :2]}")
+    
+    # for p in nearest_points[:, :2]:
+    #     x, y = p
 
-    distances = np.linalg.norm(front_points, axis=1)
-    min_dist = float(np.min(distances))
+    #     dist = math.sqrt(x*x + y*y)
+    #     angle = math.degrees(math.atan2(y, x))
 
-    return True, min_dist
+    #     print(
+    #         f"x={x:.2f}, y={y:.2f}, "
+    #         f"dist={dist:.2f}, angle={angle:.2f}"
+    #     )
+    
+    angles = np.degrees(np.arctan2(points[:,1], points[:,0]))
+    distances = np.linalg.norm(points, axis=1)
+
+    mask = (
+        (np.abs(angles) < 90) &
+        (distances < 20)
+    )
+
+    filtered = points[mask]
+
+    nearest_idx = np.argsort(
+        np.linalg.norm(filtered, axis=1)
+    )
+
+    nearest_points = filtered[nearest_idx[:10]]
+
+    print("\n=== FRONT NEAREST ===")
+    print(f"frone nearest : {nearest_points[:, :2]}")
 
 # 거리 기반 회피 판단
 def choose_avoid_direction(cluster):
@@ -71,13 +90,20 @@ def preprocess_lidar(points):
         return points
 
     # Downsample
-    points = points[::5]
+    # points = points[::5]
 
     # 너무 먼 점 제거
-    dist = np.linalg.norm(points, axis=1)
-    points = points[dist < 20.0]
+    angles = np.degrees(np.arctan2(points[:,1], points[:,0]))
+    distances = np.linalg.norm(points, axis=1)
 
-    return points
+    mask = (
+        (np.abs(angles) < 60) &
+        (distances < 20)
+    )
+
+    filtered = points[mask]
+    
+    return filtered
 
 def cluster_obstacles(points):
     """
@@ -109,21 +135,19 @@ def cluster_obstacles(points):
     return clusters
 
 def find_closest_cluster(clusters):
-    """
-    가장 가까운 obstacle cluster 찾기
-    """
 
     closest_cluster = None
     min_dist = 9999
 
     for cluster in clusters:
 
-        center = np.mean(cluster, axis=0)
+        # cluster 내부 point 중 가장 가까운 point
+        distances = np.linalg.norm(cluster, axis=1)
 
-        dist = np.linalg.norm(center)
+        nearest_dist = np.min(distances)
 
-        if dist < min_dist:
-            min_dist = dist
+        if nearest_dist < min_dist:
+            min_dist = nearest_dist
             closest_cluster = cluster
 
     return closest_cluster, min_dist
@@ -295,6 +319,16 @@ def main():
         target_location.z = spawn_point.location.z
 
         print(
+            f"Ego Vehicle: x={spawn_point.location.x:.2f}, "
+            f"y={spawn_point.location.y:.2f}"
+        )
+        
+        print(
+            f"Obstacle: x={obstacle_location.x:.2f}, "
+            f"y={obstacle_location.y:.2f}"
+        )
+
+        print(
             f"Target: x={target_location.x:.2f}, "
             f"y={target_location.y:.2f}"
         )
@@ -308,6 +342,9 @@ def main():
 
             # 차량 뒤쪽 위치 계산
             forward = tf.get_forward_vector()
+
+            # 차량 좌표 확인하기 (world 좌표계)
+            # print(f"car x={loc.x:.2f}, y={loc.y:.2f}, ")
 
             camera_loc = loc - forward * 6 + carla.Location(z=3)
 
