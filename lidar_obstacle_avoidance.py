@@ -3,59 +3,48 @@ import random
 import time
 import math
 import numpy as np
+import open3d as o3d
 from sklearn.cluster import DBSCAN
 
+vis = None
+pcd = None
+latest_xyz = None
 
 latest_lidar = {
     "points": None
 }
 
 def lidar_callback(data):
-    points = np.frombuffer(data.raw_data, dtype=np.float32)
+
+    global latest_xyz
+
+    points = np.frombuffer(
+        data.raw_data,
+        dtype=np.float32
+    )
+
     points = np.reshape(points, (-1, 4))
 
-    # vehicle local coordinate 기준 x, y만 사용
-    xy = points[:, :2]
+    xyz = points[:, :3]
+
+    # =========================
+    # ego vehicle self-hit 제거
+    # =========================
+    dist = np.linalg.norm(xyz, axis=1)
+
+    xyz = xyz[dist > 2.5]
+
+    # =========================
+    # Open3D 시각화용
+    # =========================
+    latest_xyz = xyz.copy()
+
+    # =========================
+    # 2D obstacle detection용
+    # =========================
+    xy = xyz[:, :2]
+
     latest_lidar["points"] = xy
-    
-    # lidar 좌표 확인 (차량 기준 좌표계)
-    # distances = np.linalg.norm(points, axis=1)
-
-    # sorted_idx = np.argsort(distances)
-
-    # nearest_points = points[sorted_idx[:10]]
-
-    # print(f"nearest_points : {nearest_points[:, :2]}")
-    
-    # for p in nearest_points[:, :2]:
-    #     x, y = p
-
-    #     dist = math.sqrt(x*x + y*y)
-    #     angle = math.degrees(math.atan2(y, x))
-
-    #     print(
-    #         f"x={x:.2f}, y={y:.2f}, "
-    #         f"dist={dist:.2f}, angle={angle:.2f}"
-    #     )
-    
-    angles = np.degrees(np.arctan2(points[:,1], points[:,0]))
-    distances = np.linalg.norm(points, axis=1)
-
-    mask = (
-        (np.abs(angles) < 90) &
-        (distances < 20)
-    )
-
-    filtered = points[mask]
-
-    nearest_idx = np.argsort(
-        np.linalg.norm(filtered, axis=1)
-    )
-
-    nearest_points = filtered[nearest_idx[:10]]
-
-    print("\n=== FRONT NEAREST ===")
-    print(f"frone nearest : {nearest_points[:, :2]}")
 
 # 거리 기반 회피 판단
 def choose_avoid_direction(cluster):
@@ -86,53 +75,89 @@ def normalize_angle(angle):
 
 # LiDAR 전처리
 def preprocess_lidar(points):
+
     if points is None or len(points) == 0:
         return points
 
-    # Downsample
-    # points = points[::5]
+    # =========================
+    # downsample
+    # =========================
+    points = points[::2]
 
-    # 너무 먼 점 제거
-    angles = np.degrees(np.arctan2(points[:,1], points[:,0]))
+    # =========================
+    # 거리 계산
+    # =========================
     distances = np.linalg.norm(points, axis=1)
 
+    # =========================
+    # angle 계산
+    # =========================
+    angles = np.degrees(
+        np.arctan2(
+            points[:,1],
+            points[:,0]
+        )
+    )
+
+    # =========================
+    # 전방 60도
+    # =========================
     mask = (
-        (np.abs(angles) < 60) &
-        (distances < 20)
+        (np.abs(angles) < 30) &
+        (distances > 5.0) &   # 기존 2.5보다 크게
+        (distances < 30.0)
     )
 
     filtered = points[mask]
-    
+
     return filtered
 
 def cluster_obstacles(points):
-    """
-    LiDAR point들을 obstacle 단위로 clustering
-    """
 
     if points is None or len(points) == 0:
         return []
 
     clustering = DBSCAN(
-        eps=1.2,       # point 간 최대 거리
-        min_samples=4  # 최소 point 개수
+        eps=1.0,
+        min_samples=5
     ).fit(points)
 
     labels = clustering.labels_
 
-    clusters = []
+    filtered_clusters = []
 
     for label in set(labels):
 
-        # noise 제거
         if label == -1:
             continue
 
-        cluster_points = points[labels == label]
+        cluster = points[labels == label]
 
-        clusters.append(cluster_points)
+        width = (
+            np.max(cluster[:,0]) -
+            np.min(cluster[:,0])
+        )
 
-    return clusters
+        height = (
+            np.max(cluster[:,1]) -
+            np.min(cluster[:,1])
+        )
+
+        # =========================
+        # 너무 긴 벽 제거
+        # =========================
+        if width > 6 or height > 6:
+            continue
+
+        # =========================
+        # 너무 작은 noise 제거
+        # =========================
+        if len(cluster) < 8:
+            continue
+
+        filtered_clusters.append(cluster)
+
+    return filtered_clusters
 
 def find_closest_cluster(clusters):
 
@@ -141,8 +166,10 @@ def find_closest_cluster(clusters):
 
     for cluster in clusters:
 
-        # cluster 내부 point 중 가장 가까운 point
-        distances = np.linalg.norm(cluster, axis=1)
+        distances = np.linalg.norm(
+            cluster,
+            axis=1
+        )
 
         nearest_dist = np.min(distances)
 
@@ -151,6 +178,38 @@ def find_closest_cluster(clusters):
             closest_cluster = cluster
 
     return closest_cluster, min_dist
+
+def find_front_vehicle_like_cluster(clusters):
+    best_cluster = None
+    best_dist = 9999
+
+    for cluster in clusters:
+        distances = np.linalg.norm(cluster, axis=1)
+        nearest_dist = float(np.min(distances))
+        nearest_point = cluster[np.argmin(distances)]
+
+        x, y = nearest_point
+
+        width = np.max(cluster[:, 0]) - np.min(cluster[:, 0])
+        height = np.max(cluster[:, 1]) - np.min(cluster[:, 1])
+
+        # 너무 가까운 자기 차체/노이즈 제외
+        if nearest_dist < 5.0:
+            continue
+
+        # 전방 차량 후보 범위
+        if not (5.0 < x < 30.0 and abs(y) < 5.0):
+            continue
+
+        # 너무 긴 벽 제거
+        if width > 8.0 or height > 8.0:
+            continue
+
+        if nearest_dist < best_dist:
+            best_dist = nearest_dist
+            best_cluster = cluster
+
+    return best_cluster, best_dist
 
 def move_to_target_with_lidar(vehicle, target_loc):
     transform = vehicle.get_transform()
@@ -176,27 +235,36 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
     clusters = cluster_obstacles(points)
 
-    closest_cluster, cluster_dist = find_closest_cluster(clusters)
+    closest_cluster, cluster_dist = find_front_vehicle_like_cluster(clusters)
 
     obstacle = False
     min_dist = None
 
     if closest_cluster is not None:
 
-        center = np.mean(closest_cluster, axis=0)
+        distances = np.linalg.norm(
+            closest_cluster,
+            axis=1
+        )
 
-        x = center[0]
-        y = center[1]
+        nearest_idx = np.argmin(distances)
 
-        dist = np.linalg.norm(center)
+        nearest_point = closest_cluster[nearest_idx]
 
-        print(f"[OBSTACLE] center=({x:.2f}, {y:.2f}), dist={dist:.2f}")
+        x = nearest_point[0]
+        y = nearest_point[1]
 
-        # 전방 obstacle만 사용
+        dist = distances[nearest_idx]
+
+        print(
+            f"[OBSTACLE] "
+            f"x={x:.2f}, y={y:.2f}, dist={dist:.2f}"
+        )
+
         if (
             x > 0.5 and
-            x < 10.0 and
-            abs(y) < 4.0
+            x < 15.0 and
+            abs(y) < 3.0
         ):
             obstacle = True
             min_dist = dist
@@ -238,6 +306,39 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
 
 def main():
+    global vis
+    global pcd
+    global latest_xyz
+
+    # Open3D Visualizer 생성
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(
+        window_name="CARLA LiDAR",
+        width=960,
+        height=540
+    )
+
+    pcd = o3d.geometry.PointCloud()
+
+    vis.add_geometry(pcd)
+    
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
+        size=3.0
+    )
+
+    vis.add_geometry(axis)
+    
+    render_option = vis.get_render_option()
+
+    render_option.point_size = 3.0
+    
+    ctr = vis.get_view_control()
+
+    ctr.set_front([0, 0, -1])
+    ctr.set_lookat([0, 0, 0])
+    ctr.set_up([0, -1, 0])
+    ctr.set_zoom(0.3)
+    
     actor_list = []
 
     try:
@@ -271,16 +372,16 @@ def main():
 
         # 2D LiDAR 생성
         lidar_bp = blueprint_library.find("sensor.lidar.ray_cast")
-        lidar_bp.set_attribute("channels", "1")
-        lidar_bp.set_attribute("range", "30.0")
-        lidar_bp.set_attribute("points_per_second", "7200")
+        lidar_bp.set_attribute("range", "60.0")
         lidar_bp.set_attribute("rotation_frequency", "10.0")
-        lidar_bp.set_attribute("upper_fov", "0.0")
-        lidar_bp.set_attribute("lower_fov", "0.0")
         lidar_bp.set_attribute("sensor_tick", "0.05")
+        lidar_bp.set_attribute("channels", "16")
+        lidar_bp.set_attribute("points_per_second", "50000")
+        lidar_bp.set_attribute("upper_fov", "10.0")
+        lidar_bp.set_attribute("lower_fov", "-10.0")
 
         lidar_transform = carla.Transform(
-            carla.Location(x=0.0, y=0.0, z=1.8),
+            carla.Location(x=0.0, y=0.0, z=1.0),
             carla.Rotation(pitch=0.0, yaw=0.0, roll=0.0)
         )
 
@@ -336,6 +437,22 @@ def main():
         for step in range(2000):
             world.tick()
 
+            # open3D 좌표 업데이트
+            if latest_xyz is not None:
+                xyz = np.copy(latest_xyz)
+
+                xyz = np.stack([
+                    xyz[:,0],
+                    -xyz[:,1],
+                    xyz[:,2]
+                ], axis=1)
+                
+                pcd.points = o3d.utility.Vector3dVector(xyz)
+
+                vis.update_geometry(pcd)
+                vis.poll_events()
+                vis.update_renderer()
+
             tf = ego_vehicle.get_transform()
             loc = tf.location
             yaw = tf.rotation.yaw
@@ -379,6 +496,8 @@ def main():
             world.apply_settings(settings)
         except Exception:
             pass
+
+        vis.destroy_window()
 
         print("Done")
 
