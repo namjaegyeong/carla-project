@@ -104,7 +104,7 @@ def preprocess_lidar(points):
     # =========================
     mask = (
         (np.abs(angles) < 30) &
-        (distances > 5.0) &   # 기존 2.5보다 크게
+        (distances > 1.5) &   # 기존 2.5보다 크게
         (distances < 30.0)
     )
 
@@ -194,11 +194,11 @@ def find_front_vehicle_like_cluster(clusters):
         height = np.max(cluster[:, 1]) - np.min(cluster[:, 1])
 
         # 너무 가까운 자기 차체/노이즈 제외
-        if nearest_dist < 5.0:
+        if nearest_dist < 2.5:
             continue
 
         # 전방 차량 후보 범위
-        if not (5.0 < x < 30.0 and abs(y) < 5.0):
+        if not (2.5 < x < 30.0 and abs(y) < 5.0):
             continue
 
         # 너무 긴 벽 제거
@@ -263,8 +263,8 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
         if (
             x > 0.5 and
-            x < 15.0 and
-            abs(y) < 3.0
+            x < 20.0 and
+            abs(y) < 3.5
         ):
             obstacle = True
             min_dist = dist
@@ -334,9 +334,9 @@ def main():
     
     ctr = vis.get_view_control()
 
-    ctr.set_front([0, 0, -1])
+    ctr.set_front([0, 0, 1])
     ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
+    ctr.set_up([1, 0, 0])
     ctr.set_zoom(0.3)
     
     actor_list = []
