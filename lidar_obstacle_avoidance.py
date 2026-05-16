@@ -25,22 +25,41 @@ def lidar_callback(data):
 
     points = np.reshape(points, (-1, 4))
 
+    # =========================
+    # ego vehicle body mask
+    # =========================
+    not_self = ~(
+        (points[:,0] > -3.0) &
+        (points[:,0] < 4.0) &
+        (np.abs(points[:,1]) < 2.5)
+    )
+
+    points = points[not_self]
+
+    # =========================
+    # ground / curb filtering
+    # =========================
+    points = points[points[:,2] > -0.5]
+
     xyz = points[:, :3]
 
     # =========================
-    # ego vehicle self-hit 제거
+    # distance filtering
     # =========================
-    dist = np.linalg.norm(xyz, axis=1)
+    dist = np.linalg.norm(
+        xyz,
+        axis=1
+    )
 
     xyz = xyz[dist > 2.5]
 
     # =========================
-    # Open3D 시각화용
+    # Open3D visualization
     # =========================
     latest_xyz = xyz.copy()
 
     # =========================
-    # 2D obstacle detection용
+    # 2D obstacle detection
     # =========================
     xy = xyz[:, :2]
 
@@ -85,12 +104,15 @@ def preprocess_lidar(points):
     points = points[::2]
 
     # =========================
-    # 거리 계산
+    # distance
     # =========================
-    distances = np.linalg.norm(points, axis=1)
+    distances = np.linalg.norm(
+        points,
+        axis=1
+    )
 
     # =========================
-    # angle 계산
+    # angle
     # =========================
     angles = np.degrees(
         np.arctan2(
@@ -100,12 +122,12 @@ def preprocess_lidar(points):
     )
 
     # =========================
-    # 전방 60도
+    # forward sector
     # =========================
     mask = (
-        (np.abs(angles) < 30) &
-        (distances > 1.5) &   # 기존 2.5보다 크게
-        (distances < 30.0)
+        (np.abs(angles) < 40) &
+        (distances > 2.0) &
+        (distances < 40.0)
     )
 
     filtered = points[mask]
@@ -118,8 +140,8 @@ def cluster_obstacles(points):
         return []
 
     clustering = DBSCAN(
-        eps=1.0,
-        min_samples=5
+        eps=1.8,
+        min_samples=3
     ).fit(points)
 
     labels = clustering.labels_
@@ -132,6 +154,8 @@ def cluster_obstacles(points):
             continue
 
         cluster = points[labels == label]
+        
+        print(f"cluster 좌표 확인 : {cluster}")
 
         width = (
             np.max(cluster[:,0]) -
@@ -152,7 +176,7 @@ def cluster_obstacles(points):
         # =========================
         # 너무 작은 noise 제거
         # =========================
-        if len(cluster) < 8:
+        if len(cluster) < 3:
             continue
 
         filtered_clusters.append(cluster)
@@ -180,33 +204,45 @@ def find_closest_cluster(clusters):
     return closest_cluster, min_dist
 
 def find_front_vehicle_like_cluster(clusters):
+
     best_cluster = None
     best_dist = 9999
 
     for cluster in clusters:
-        distances = np.linalg.norm(cluster, axis=1)
-        nearest_dist = float(np.min(distances))
-        nearest_point = cluster[np.argmin(distances)]
 
-        x, y = nearest_point
+        # =========================
+        # cluster 중심
+        # =========================
+        center = np.mean(cluster, axis=0)
 
-        width = np.max(cluster[:, 0]) - np.min(cluster[:, 0])
-        height = np.max(cluster[:, 1]) - np.min(cluster[:, 1])
+        x, y = center
 
-        # 너무 가까운 자기 차체/노이즈 제외
-        if nearest_dist < 2.5:
+        cluster_dist = np.linalg.norm(center)
+
+        width = (
+            np.max(cluster[:,0]) -
+            np.min(cluster[:,0])
+        )
+
+        height = (
+            np.max(cluster[:,1]) -
+            np.min(cluster[:,1])
+        )
+
+        # 너무 가까운 자기 차체 제거
+        if cluster_dist < 3.0:
             continue
 
-        # 전방 차량 후보 범위
-        if not (2.5 < x < 30.0 and abs(y) < 5.0):
+        # 전방 후보
+        if not (3.0 < x < 30.0 and abs(y) < 5.0):
             continue
 
-        # 너무 긴 벽 제거
+        # 긴 벽 제거
         if width > 8.0 or height > 8.0:
             continue
 
-        if nearest_dist < best_dist:
-            best_dist = nearest_dist
+        if cluster_dist < best_dist:
+            best_dist = cluster_dist
             best_cluster = cluster
 
     return best_cluster, best_dist
@@ -228,6 +264,10 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
     target_yaw = math.atan2(dy, dx)
     yaw_error = normalize_angle(target_yaw - yaw)
+
+    print("yaw:", math.degrees(yaw))
+    print("target:", math.degrees(target_yaw))
+    print("error:", math.degrees(yaw_error))
 
     base_steer = np.clip(yaw_error * 0.8, -0.6, 0.6)
 
@@ -269,9 +309,9 @@ def move_to_target_with_lidar(vehicle, target_loc):
             obstacle = True
             min_dist = dist
 
-    print(points)
+    # print(points)
 
-    print(obstacle, min_dist)
+    # print(obstacle, min_dist)
 
     if obstacle:
         avoid_steer = choose_avoid_direction(closest_cluster)
@@ -337,7 +377,7 @@ def main():
     ctr.set_front([0, 0, 1])
     ctr.set_lookat([0, 0, 0])
     ctr.set_up([1, 0, 0])
-    ctr.set_zoom(0.3)
+    ctr.set_zoom(0.7)
     
     actor_list = []
 
