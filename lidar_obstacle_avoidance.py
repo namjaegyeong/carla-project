@@ -155,7 +155,7 @@ def cluster_obstacles(points):
 
         cluster = points[labels == label]
         
-        print(f"cluster 좌표 확인 : {cluster}")
+        # print(f"cluster 좌표 확인 : {cluster}")
 
         width = (
             np.max(cluster[:,0]) -
@@ -320,6 +320,8 @@ def move_to_target_with_lidar(vehicle, target_loc):
 
         steer = 0.3 * base_steer + 0.7 * avoid_steer
         steer = float(np.clip(steer, -1.0, 1.0))
+        
+        print(f"[STEER] {steer}")
 
         if min_dist < 2.5:
             throttle = 0.0
@@ -421,8 +423,16 @@ def main():
         lidar_bp.set_attribute("lower_fov", "-10.0")
 
         lidar_transform = carla.Transform(
-            carla.Location(x=0.0, y=0.0, z=1.0),
-            carla.Rotation(pitch=0.0, yaw=0.0, roll=0.0)
+            carla.Location(
+                x=2.5,
+                y=0.0,
+                z=2.0
+            ),
+            carla.Rotation(
+                pitch=-5.0,
+                yaw=0.0,
+                roll=0.0
+            )
         )
 
         lidar = world.spawn_actor(
