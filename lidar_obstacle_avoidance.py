@@ -2,9 +2,11 @@ import carla
 import random
 import time
 import math
+import cv2
 import numpy as np
 import open3d as o3d
 from sklearn.cluster import DBSCAN
+from ultralytics import YOLO
 
 vis = None
 pcd = None
@@ -14,6 +16,72 @@ latest_lidar = {
     "points": None
 }
 
+latest_frame = None
+
+# YOLO 모델 Load
+model = YOLO("yolov8n.pt")
+
+# RGB 카메라 콜백
+def camera_callback(image):
+
+    global latest_frame
+
+    array = np.frombuffer(
+        image.raw_data,
+        dtype=np.uint8
+    )
+
+    array = np.reshape(
+        array,
+        (image.height, image.width, 4)
+    )
+
+    frame = array[:, :, :3].copy()
+    
+    # Object Detection
+    results = model(frame)
+    
+    # Bounding Box 가져오기
+    for result in results:
+        for box in result.boxes:
+
+            cls = int(box.cls[0])
+
+            conf = float(box.conf[0])
+
+            x1, y1, x2, y2 = map(
+                int,
+                box.xyxy[0]
+            )
+
+            print(cls, conf)
+            
+            names = model.names
+
+            label = f"{names[cls]} {conf:.2f}"
+            
+            cv2.rectangle(
+                frame,
+                (x1, y1),
+                (x2, y2),
+                (0,255,0),
+                2
+            )
+            
+            cv2.putText(
+                frame,
+                label,
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0,255,0),
+                2
+            )
+
+    # Ultralytics YOLO 는 Bounding Box, Class Name, Confidence 전부 그려주는 기능 존재
+    latest_frame = results[0].plot()
+
+# Lidar 콜백
 def lidar_callback(data):
 
     global latest_xyz
@@ -444,6 +512,27 @@ def main():
         lidar.listen(lidar_callback)
 
         print("2D LiDAR attached")
+        
+        # RGB 카메라 생성
+        camera_bp = blueprint_library.find("sensor.camera.rgb")
+
+        camera_bp.set_attribute("image_size_x", "1280")     # 이미지 너비(픽셀)
+        camera_bp.set_attribute("image_size_y", "720")      # 이미지 높이(픽셀)
+        camera_bp.set_attribute("fov", "90")                # 수평 시야각(도)
+
+        camera_transform = carla.Transform(
+            carla.Location(x=1.5, z=2.4)
+        )
+
+        camera = world.spawn_actor(
+            camera_bp,
+            camera_transform,
+            attach_to=ego_vehicle
+        )
+        actor_list.append(camera)
+        camera.listen(camera_callback)
+
+        print("camera attached")
 
         # 장애물 차량 생성
         forward_vector = spawn_point.get_forward_vector()
@@ -486,6 +575,11 @@ def main():
 
         for step in range(2000):
             world.tick()
+
+            # Bounding Box 시각화
+            if latest_frame is not None:
+                cv2.imshow("RGB", latest_frame)
+                cv2.waitKey(1)
 
             # open3D 좌표 업데이트
             if latest_xyz is not None:
