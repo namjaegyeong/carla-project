@@ -25,10 +25,3 @@ class PoseSubscriber(Node):
             msg.pose.position.y,
             msg.pose.position.z
         )
-
-
-rclpy.init()
-
-node = PoseSubscriber()
-
-rclpy.spin(node)

@@ -4,9 +4,11 @@ import time
 import math
 import cv2
 import numpy as np
+import rclpy
+from rclpy.node import Node
 import open3d as o3d
 from sklearn.cluster import DBSCAN
-from ultralytics import YOLO
+from ros2.carla_publisher import CarlaPublisher
 
 vis = None
 pcd = None
@@ -18,68 +20,77 @@ latest_lidar = {
 
 latest_frame = None
 
+# YOLO 모델 서버 아이피, 주소
+HOST = '192.168.0.10'
+PORT = '1234'
+
 # YOLO 모델 Load
-model = YOLO("yolov8n.pt")
+# model = YOLO("yolov8n.pt")
+
+# Ros2 Publisher Node
+node: CarlaPublisher = None
 
 # RGB 카메라 콜백
 def camera_callback(image):
 
     global latest_frame
 
-    array = np.frombuffer(
-        image.raw_data,
-        dtype=np.uint8
-    )
+    node.publish_carla_image(image)
 
-    array = np.reshape(
-        array,
-        (image.height, image.width, 4)
-    )
+    # array = np.frombuffer(
+    #     image.raw_data,
+    #     dtype=np.uint8
+    # )
 
-    frame = array[:, :, :3].copy()
+    # array = np.reshape(
+    #     array,
+    #     (image.height, image.width, 4)
+    # )
+
+    # frame = array[:, :, :3].copy()      # BGRA Raw 데이터
+
+    # # Object Detection
+    # results = model(frame)
     
-    # Object Detection
-    results = model(frame)
-    
-    # Bounding Box 가져오기
-    for result in results:
-        for box in result.boxes:
+    # # Bounding Box 가져오기
+    # for result in results:
+    #     for box in result.boxes:
 
-            cls = int(box.cls[0])
+    #         cls = int(box.cls[0])
 
-            conf = float(box.conf[0])
+    #         conf = float(box.conf[0])
 
-            x1, y1, x2, y2 = map(
-                int,
-                box.xyxy[0]
-            )
+    #         x1, y1, x2, y2 = map(
+    #             int,
+    #             box.xyxy[0]
+    #         )
 
-            print(cls, conf)
+    #         print(cls, conf)
             
-            names = model.names
+    #         names = model.names
 
-            label = f"{names[cls]} {conf:.2f}"
+    #         label = f"{names[cls]} {conf:.2f}"
             
-            cv2.rectangle(
-                frame,
-                (x1, y1),
-                (x2, y2),
-                (0,255,0),
-                2
-            )
+    #         cv2.rectangle(
+    #             frame,
+    #             (x1, y1),
+    #             (x2, y2),
+    #             (0,255,0),
+    #             2
+    #         )
             
-            cv2.putText(
-                frame,
-                label,
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0,255,0),
-                2
-            )
+    #         cv2.putText(
+    #             frame,
+    #             label,
+    #             (x1, y1 - 10),
+    #             cv2.FONT_HERSHEY_SIMPLEX,
+    #             0.5,
+    #             (0,255,0),
+    #             2
+    #         )
 
-    # Ultralytics YOLO 는 Bounding Box, Class Name, Confidence 전부 그려주는 기능 존재
-    latest_frame = results[0].plot()
+    # # Ultralytics YOLO 는 Bounding Box, Class Name, Confidence 전부 그려주는 기능 존재
+    # latest_frame = results[0].plot()
 
 # Lidar 콜백
 def lidar_callback(data):
@@ -451,9 +462,19 @@ def main():
     
     actor_list = []
 
+    # ros2 publisher node 코드
+    rclpy.init()
+    node = CarlaPublisher()
+
     try:
+        # ros2 node callback 실행
+        rclpy.spin_once(node, timeout_sec=0.0)
+
         client = carla.Client("localhost", 2000)
         client.set_timeout(10.0)
+
+        print(client.get_client_version())
+        print(client.get_server_version())
 
         world = client.get_world()
 
@@ -642,6 +663,10 @@ def main():
             pass
 
         vis.destroy_window()
+
+        # ros2 node 정리
+        node.destroy_node()
+        rclpy.shutdown()
 
         print("Done")
 

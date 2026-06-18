@@ -1,9 +1,9 @@
-import rclpy
+import numpy as np
 
 from rclpy.node import Node
 
-from geometry_msgs.msg import PoseStamped
-
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 
 class CarlaPublisher(Node):
 
@@ -11,30 +11,30 @@ class CarlaPublisher(Node):
 
         super().__init__('carla_pub')
 
-        self.pub = self.create_publisher(
-            PoseStamped,
-            '/carla/vehicle_pose',
+        self.bridge = CvBridge()
+
+        self.image_pub = self.create_publisher(
+            Image,
+            '/camera/image_raw',
             10
         )
 
-        self.timer = self.create_timer(
-            0.05,
-            self.publish_pose
+    def publish_carla_image(self, carla_image):
+
+        img = np.frombuffer(
+            carla_image.raw_data,
+            dtype=np.uint8
+        ).reshape(
+            carla_image.height,
+            carla_image.width,
+            4
         )
 
-    def publish_pose(self):
+        img = img[:, :, :3]
 
-        msg = PoseStamped()
+        msg = self.bridge.cv2_to_imgmsg(
+            img,
+            encoding='bgr8'
+        )
 
-        msg.pose.position.x = 10.0
-        msg.pose.position.y = 20.0
-        msg.pose.position.z = 0.0
-
-        self.pub.publish(msg)
-
-
-rclpy.init()
-
-node = CarlaPublisher()
-
-rclpy.spin(node)
+        self.image_pub.publish(msg)
