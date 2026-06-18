@@ -33,7 +33,7 @@ node: CarlaPublisher = None
 # RGB 카메라 콜백
 def camera_callback(image):
 
-    global latest_frame
+    global node
 
     node.publish_carla_image(image)
 
@@ -430,6 +430,7 @@ def main():
     global vis
     global pcd
     global latest_xyz
+    global node
 
     # Open3D Visualizer 생성
     vis = o3d.visualization.Visualizer()
