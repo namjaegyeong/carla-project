@@ -8,7 +8,8 @@ import rclpy
 from rclpy.node import Node
 import open3d as o3d
 from sklearn.cluster import DBSCAN
-from ros2.carla_publisher import CarlaPublisher
+from ros2.image_raw_publisher import ImageRawPublisher
+from ros2.yolo_subscriber import YoloSubscriber
 
 vis = None
 pcd = None
@@ -28,14 +29,15 @@ PORT = '1234'
 # model = YOLO("yolov8n.pt")
 
 # Ros2 Publisher Node
-node: CarlaPublisher = None
+pub_node: ImageRawPublisher = None
+sub_node: YoloSubscriber = None
 
 # RGB 카메라 콜백
 def camera_callback(image):
 
-    global node
+    global pub_node
 
-    node.publish_carla_image(image)
+    pub_node.publish_carla_image(image)
 
     # array = np.frombuffer(
     #     image.raw_data,
@@ -430,7 +432,8 @@ def main():
     global vis
     global pcd
     global latest_xyz
-    global node
+    global pub_node
+    global sub_node
 
     # Open3D Visualizer 생성
     vis = o3d.visualization.Visualizer()
@@ -465,11 +468,13 @@ def main():
 
     # ros2 publisher node 코드
     rclpy.init()
-    node = CarlaPublisher()
+    pub_node = ImageRawPublisher()
+    sub_node = YoloSubscriber()
 
     try:
         # ros2 node callback 실행
-        rclpy.spin_once(node, timeout_sec=0.0)
+        rclpy.spin_once(pub_node, timeout_sec=0.0)
+        rclpy.spin_once(sub_node, timeout_sec=0.0)
 
         client = carla.Client("localhost", 2000)
         client.set_timeout(10.0)
@@ -666,7 +671,9 @@ def main():
         vis.destroy_window()
 
         # ros2 node 정리
-        node.destroy_node()
+        pub_node.destroy_node()
+        sub_node.destroy_node()
+
         rclpy.shutdown()
 
         print("Done")
